@@ -504,9 +504,11 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                     recordingState = "Processing"
                                     progressText = "Đang chạy Silero VAD kiểm tra tiếng người..."
                                 }
-
+//OrtEnvironment là môi trường/runtime context của ONNX Runtime. -> tạo môi trường + tạo session để chạy model, có thể ví OrtEnvironment là context trong Android
                                 val ortEnvironment = OrtEnvironment.getEnvironment()
+                                //đọc toàn bộ binary file vào RAM.
                                 val vadBytes = context.assets.open("model/silero_vad_16k_op15.onnx").readBytes()
+                                //OrtSession là một phiên làm việc để chạy model Silero VAD cụ thể.
                                 val vadSession = ortEnvironment.createSession(vadBytes)
                                 val hasHumanSpeech = checkSpeechWithSileroVAD(vadSession, ortEnvironment, audioData)
                                 vadSession.close()
@@ -735,6 +737,8 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
 }
 
 // 1, 2, 3. DTW and Cosine Distance implementation requested by user
+// Tính khoảng cách cô-sin (Cosine Distance) giữa 2 vector đặc trưng 96 chiều.
+// Công thức: 1 - Cosine Similarity. Khoảng cách càng nhỏ (gần 0) nghĩa là 2 vector đặc trưng càng giống nhau.
 fun cosineDistance(bVar: FloatArray, bVar2: FloatArray): Float {
     var f12 = 0.0f
     var norm1 = 0.0f
@@ -751,17 +755,24 @@ fun cosineDistance(bVar: FloatArray, bVar2: FloatArray): Float {
     return 1.0f - cosineSimilarity
 }
 
+// Thuật toán Dynamic Time Warping (DTW) dùng để so khớp 2 chuỗi frame đặc trưng giọng nói (query và reference)
+// có độ dài thời gian (số lượng frame) khác nhau nhưng phát âm cùng một nội dung.
+// DTW tìm ra đường đi tối ưu (độ lệch ít nhất) giữa 2 chuỗi và trả về khoảng cách tổng thể (distance).
 fun computeDTWDistance(queryFrames: List<FloatArray>, refFrames: List<FloatArray>): Float {
     val n = queryFrames.size
     val m = refFrames.size
     if (n == 0 || m == 0) return Float.MAX_VALUE
 
+    // Khởi tạo ma trận chi phí DTW kích thước (n+1) x (m+1), ban đầu gán giá trị vô cực (Float.MAX_VALUE)
     val dtw = Array(n + 1) { FloatArray(m + 1) { Float.MAX_VALUE } }
     dtw[0][0] = 0.0f
 
+    // Tính toán chi phí tích lũy qua từng bước thời gian (i, j)
     for (i in 1..n) {
         for (j in 1..m) {
+            // Chi phí tại bước (i, j) là khoảng cách cô-sin giữa frame thứ i của query và frame thứ j của ref
             val cost = cosineDistance(queryFrames[i - 1], refFrames[j - 1])
+            // Cộng thêm chi phí tối thiểu từ 3 hướng trước đó (đường chéo, hàng trên, cột trái)
             dtw[i][j] = cost + minOf(
                 dtw[i - 1][j],
                 dtw[i][j - 1],
@@ -769,6 +780,7 @@ fun computeDTWDistance(queryFrames: List<FloatArray>, refFrames: List<FloatArray
             )
         }
     }
+    // Chuẩn hóa tổng khoảng cách DTW bằng tổng số lượng frame (n + m) để ra điểm trung bình
     return dtw[n][m] / (n + m)
 }
 
@@ -823,6 +835,8 @@ suspend fun recognizeSpeech(context: Context): String = suspendCancellableCorout
     }
 }
 
+// Hàm kiểm tra xem đoạn ghi âm có chứa tiếng nói con người (Human Speech) hay không bằng model Silero VAD (ONNX).
+// Model nhận vào các đoạn audio nhỏ (chunks 512 mẫu), tần số mẫu (sr = 16000Hz), và state để trả về xác suất (probability) có tiếng nói.
 fun checkSpeechWithSileroVAD(
     vadSession: OrtSession,
     env: OrtEnvironment,
@@ -839,17 +853,20 @@ fun checkSpeechWithSileroVAD(
         paddedList.add(0.0f)
     }
 
+    // Tạo tensor chứa thông tin tần số mẫu 16kHz truyền vào model VAD
     val srTensor = OnnxTensor.createTensor(env, longArrayOf(16000))
     var speechChunkCount = 0
     val totalChunks = paddedList.size / chunkSize
     Log.d("SileroVAD", "Total chunks to process: $totalChunks (padded size: ${paddedList.size})")
 
+    // Chia audio thành các chunk 512 mẫu để chạy model ONNX lần lượt theo thời gian
     for (i in 0 until totalChunks) {
         val chunk = FloatArray(chunkSize)
         for (j in 0 until chunkSize) {
             chunk[j] = paddedList[i * chunkSize + j]
         }
         val inputTensor = OnnxTensor.createTensor(env, arrayOf(chunk))
+        // Trạng thái ẩn (state) của mạng RNN trong mô hình Silero VAD (kích thước 2 x 1 x 128)
         val stateArray = Array(2) { Array(1) { FloatArray(128) } }
         val stateTensor = OnnxTensor.createTensor(env, stateArray)
 
@@ -860,6 +877,7 @@ fun checkSpeechWithSileroVAD(
         )
 
         try {
+            // Chạy model ONNX Runtime (vận hành suy luận AI)
             val results = vadSession.run(inputs)
             val outputTensor = results[0] as OnnxTensor
             val outputArray = outputTensor.floatBuffer.let { buffer ->
@@ -867,7 +885,9 @@ fun checkSpeechWithSileroVAD(
                 buffer.get(arr)
                 arr
             }
+            // Lấy xác suất có tiếng nói (probability) từ output của model
             val prob = if (outputArray.isNotEmpty()) outputArray[0] else -1f
+            // Nếu xác suất > 0.3 thì tính là có tiếng nói trong chunk này
             if (prob > 0.3f) {
                 speechChunkCount++
                 Log.d("SileroVAD", "Chunk $i/$totalChunks: SPEECH detected (prob = $prob)")
@@ -886,17 +906,21 @@ fun checkSpeechWithSileroVAD(
 
     srTensor.close()
 
+    // Ngưỡng quyết định: nếu số lượng chunk chứa tiếng nói đạt ngưỡng yêu cầu thì coi là có giọng nói hợp lệ
     val threshold = maxOf(2, totalChunks / 20)
     val hasSpeech = speechChunkCount >= threshold
     Log.d("SileroVAD", "VAD finished: speechChunkCount = $speechChunkCount, threshold = $threshold, hasSpeech = $hasSpeech")
     return hasSpeech
 }
 
+// Hàm trích xuất đặc trưng giọng nói (Speech Embedding) sử dụng model ONNX (`speech-embedding.onnx`).
+// Model nhận toàn bộ mảng audio PCM và trả về chuỗi các frame đặc trưng (mỗi frame gồm 96 chiều).
 fun extractEmbeddingFrames(
     embSession: OrtSession,
     env: OrtEnvironment,
     audioFloatList: List<Float>
 ): List<FloatArray> {
+    // Đưa danh sách audio float thành mảng 2 chiều để làm input tensor cho model ONNX
     val inputArray = arrayOf(audioFloatList.toFloatArray())
     val inputTensor = OnnxTensor.createTensor(env, inputArray)
     
@@ -904,6 +928,7 @@ fun extractEmbeddingFrames(
     val inputs = mapOf(inputName to inputTensor)
 
     try {
+        // Thực thi suy luận (inference) với ONNX Runtime Session
         val results = embSession.run(inputs)
         val outputTensor = results[0] as OnnxTensor
         val outputBuffer = outputTensor.floatBuffer
@@ -915,9 +940,10 @@ fun extractEmbeddingFrames(
         inputTensor.close()
 
         val frames = mutableListOf<FloatArray>()
-        val dim = 96
-        val numFrames = totalElements / dim
+        val dim = 96 // Số chiều (dimension) đặc trưng của mỗi frame
+        val numFrames = totalElements / dim // Tổng số frame trích xuất được theo thời gian
 
+        // Cắt mảng kết quả 1 chiều thành danh sách các FloatArray 96 chiều (các vector đặc trưng từng khung thời gian)
         for (f in 0 until maxOf(1, numFrames)) {
             val frame = FloatArray(dim)
             val start = f * dim
