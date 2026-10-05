@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#EE000000"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="32dp">
+
+    <TextView
+        android:id="@+id/tvTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🔒 MÀN HÌNH KHÓA (OVERLAY)"
+        android:textColor="@android:color/white"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvSubtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="48dp"
+        android:text="Floating Overlay Window (Type 2038)"
+        android:textColor="@android:color/darker_gray"
+        android:textSize="14sp" />
+
+    <Button
+        android:id="@+id/btnUnlock"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="NHẤN ĐỂ MỞ KHÓA"
+        android:textAllCaps="true" />
+
+</LinearLayout>
