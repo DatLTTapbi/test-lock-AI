@@ -1,6 +1,10 @@
 package com.example.testlock
 
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
@@ -9,17 +13,38 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -27,18 +52,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
-import android.content.Context
-import android.os.Handler
-import android.util.Log
 import com.example.testlock.service.LockScreenService
 import com.example.testlock.ui.theme.TestlockTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
 
@@ -58,8 +79,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
 
@@ -69,7 +94,10 @@ class MainActivity : ComponentActivity() {
                     LockScreenTestScreen(
                         modifier = Modifier.padding(innerPadding),
                         onCheckPermission = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(
+                                    this
+                                )
+                            ) {
                                 val intent = Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                     Uri.parse("package:$packageName")
@@ -112,15 +140,19 @@ fun LockScreenTestScreen(
         showVoiceSetup -> {
             VoiceLockSetupScreen(onDismiss = { showVoiceSetup = false })
         }
+
         showVoiceVerify -> {
             VoiceVerificationScreen(onDismiss = { showVoiceVerify = false })
         }
+
         showKeywordSetup -> {
             SpeechKeywordSetupScreen(onDismiss = { showKeywordSetup = false })
         }
+
         showKeywordVerify -> {
             SpeechKeywordVerifyScreen(onDismiss = { showKeywordVerify = false })
         }
+
         else -> {
             Column(
                 modifier = modifier
@@ -137,14 +169,18 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { onCheckPermission() },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
                 ) {
                     Text("1. Cấp Quyền Overlay")
                 }
 
                 Button(
                     onClick = { onStartService() },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Text("2. Bắt đầu Foreground Service")
@@ -152,7 +188,9 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { onStopService() },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text("3. Dừng Service")
@@ -160,7 +198,9 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { showVoiceSetup = true },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                 ) {
                     Text("4. Thiết lập Khóa Giọng Nói (Vector DTW)")
@@ -168,7 +208,9 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { showVoiceVerify = true },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                 ) {
                     Text("5. Xác thực Giọng Nói (Vector DTW)")
@@ -176,7 +218,9 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { showKeywordSetup = true },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                 ) {
                     Text("6. Đặt Mật Khẩu Bằng Giọng Nói (Keyword Setup)")
@@ -184,7 +228,9 @@ fun LockScreenTestScreen(
 
                 Button(
                     onClick = { showKeywordVerify = true },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
                 ) {
                     Text("7. Xác Thực Từ Khóa (SpeechRecognizer)")
@@ -242,7 +288,7 @@ fun SpeechKeywordSetupScreen(onDismiss: () -> Unit) {
             onClick = {
                 if (setupState == "Idle") {
                     setupState = "Listening"
-                    instructionText = "Đang lắng nghe khẩu lệnh..."
+                    instructionText = "Đang lắng nghe ..."
 
                     coroutineScope.launch(Dispatchers.IO) {
                         try {
@@ -250,7 +296,8 @@ fun SpeechKeywordSetupScreen(onDismiss: () -> Unit) {
                             withContext(Dispatchers.Main) {
                                 setupState = "Idle"
                                 if (speechResult.startsWith("Lỗi") || speechResult.contains("Không nhận diện")) {
-                                    instructionText = "Không nhận diện được: $speechResult. Thử lại!"
+                                    instructionText =
+                                        "Không nhận diện được: $speechResult. Thử lại!"
                                 } else {
                                     VoiceLockState.targetKeyword = speechResult
                                     registeredKeyword = speechResult
@@ -276,7 +323,9 @@ fun SpeechKeywordSetupScreen(onDismiss: () -> Unit) {
 
         Button(
             onClick = { onDismiss() },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
         ) {
             Text("Xong / Quay lại")
         }
@@ -408,7 +457,9 @@ fun SpeechKeywordVerifyScreen(onDismiss: () -> Unit) {
 
         OutlinedButton(
             onClick = { onDismiss() },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
         ) {
             Text("Quay lại")
         }
@@ -466,39 +517,53 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                     recordingState = "Recording"
                     recognizedText = ""
                     progressText = "Đang ghi âm (AudioRecord 16kHz)..."
-                    
+
                     coroutineScope.launch(Dispatchers.IO) {
                         try {
                             val sampleRate = 16000
                             val channelConfig = AudioFormat.CHANNEL_IN_MONO
                             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-                            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-                            
-                            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            val minBufferSize =
+                                AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+
+                            if (ActivityCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
                                 val recorder = AudioRecord(
-                                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                                    MediaRecorder.AudioSource.MIC,
                                     sampleRate,
                                     channelConfig,
                                     audioFormat,
                                     maxOf(minBufferSize, 3200)
                                 )
 
+                                Log.d("AudioRecordDebug", "Requested sampleRate: $sampleRate, Actual sampleRate: ${recorder.sampleRate}, state: ${recorder.state}, minBufferSize: $minBufferSize")
+
                                 val audioData = mutableListOf<Float>()
                                 val buffer = ByteArray(512 * 2)
                                 recorder.startRecording()
-                                
+
                                 val startTime = System.currentTimeMillis()
                                 while (System.currentTimeMillis() - startTime < 4000) {
                                     val readSize = recorder.read(buffer, 0, buffer.size)
                                     if (readSize > 0) {
                                         for (i in 0 until readSize step 2) {
-                                            val s = ((buffer[i+1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
+                                            val s =
+                                                ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
                                             audioData.add(s / 32768.0f)
                                         }
                                     }
                                 }
                                 recorder.stop()
                                 recorder.release()
+
+                                Log.d("SileroVADSetup", "AudioRecord finished: total samples = ${audioData.size}, duration = ${audioData.size * 1000L / 16000} ms")
+                                if (audioData.isNotEmpty()) {
+                                    val overallRms = sqrt(audioData.map { it * it }.average())
+                                    Log.d("SileroVADSetup", "Overall audio RMS = $overallRms, min = ${audioData.minOrNull()}, max = ${audioData.maxOrNull()}")
+                                }
 
                                 withContext(Dispatchers.Main) {
                                     recordingState = "Processing"
@@ -507,16 +572,19 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
 //OrtEnvironment là môi trường/runtime context của ONNX Runtime. -> tạo môi trường + tạo session để chạy model, có thể ví OrtEnvironment là context trong Android
                                 val ortEnvironment = OrtEnvironment.getEnvironment()
                                 //đọc toàn bộ binary file vào RAM.
-                                val vadBytes = context.assets.open("model/silero_vad_16k_op15.onnx").readBytes()
+                                val vadBytes = context.assets.open("model/silero_vad_16k_op15.onnx")
+                                    .readBytes()
                                 //OrtSession là một phiên làm việc để chạy model Silero VAD cụ thể.
                                 val vadSession = ortEnvironment.createSession(vadBytes)
-                                val hasHumanSpeech = checkSpeechWithSileroVAD(vadSession, ortEnvironment, audioData)
+                                val hasHumanSpeech =
+                                    checkSpeechWithSileroVAD(vadSession, ortEnvironment, audioData)
                                 vadSession.close()
 
                                 if (!hasHumanSpeech) {
                                     withContext(Dispatchers.Main) {
                                         recordingState = "Idle"
-                                        progressText = "Không phát hiện thấy giọng nói! Vui lòng thử lại."
+                                        progressText =
+                                            "Không phát hiện thấy giọng nói! Vui lòng thử lại."
                                     }
                                     return@launch
                                 }
@@ -525,24 +593,20 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                     progressText = "Phát hiện giọng nói! Đang nhận diện từ..."
                                 }
 
-                                val speechResult = recognizeSpeech(context)
-
-                                withContext(Dispatchers.Main) {
-                                    recognizedText = speechResult
-                                    progressText = "Đang trích xuất Speech Embedding (96 chiều)..."
-                                }
-
-                                val embBytes = context.assets.open("model/speech-embedding.onnx").readBytes()
+                                val embBytes =
+                                    context.assets.open("model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx").readBytes()
                                 val embSession = ortEnvironment.createSession(embBytes)
-                                val embeddingFrames = extractEmbeddingFrames(embSession, ortEnvironment, audioData)
+                                val embeddingFrames =
+                                    extractEmbeddingFrames(embSession, ortEnvironment, audioData)
                                 embSession.close()
 
                                 VoiceLockState.referenceFrames = embeddingFrames
-Log.d("faewfawe","${VoiceLockState.referenceFrames}")
+                                Log.d("faewfawe", "${VoiceLockState.referenceFrames}")
                                 withContext(Dispatchers.Main) {
                                     recordingState = "Success"
                                     isSuccess = true
-                                    progressText = "Thành công! Đã lưu mẫu chuẩn (Reference Vector)."
+                                    progressText =
+                                        "Thành công! Đã lưu mẫu chuẩn (Reference Vector)."
                                 }
                             } else {
                                 withContext(Dispatchers.Main) {
@@ -566,7 +630,10 @@ Log.d("faewfawe","${VoiceLockState.referenceFrames}")
                 containerColor = if (recordingState == "Recording") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
             )
         ) {
-            Text(text = if (recordingState == "Recording") "Recording" else "Record", fontSize = 16.sp)
+            Text(
+                text = if (recordingState == "Recording") "Recording" else "Record",
+                fontSize = 16.sp
+            )
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -574,7 +641,9 @@ Log.d("faewfawe","${VoiceLockState.referenceFrames}")
         Button(
             onClick = { onDismiss() },
             enabled = isSuccess,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
         ) {
             Text("Continue")
         }
@@ -583,7 +652,9 @@ Log.d("faewfawe","${VoiceLockState.referenceFrames}")
 
         OutlinedButton(
             onClick = { onDismiss() },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
         ) {
             Text("Back")
         }
@@ -651,9 +722,14 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
                             val sampleRate = 16000
                             val channelConfig = AudioFormat.CHANNEL_IN_MONO
                             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-                            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+                            val minBufferSize =
+                                AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
-                            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            if (ActivityCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
                                 val recorder = AudioRecord(
                                     MediaRecorder.AudioSource.VOICE_RECOGNITION,
                                     sampleRate,
@@ -671,7 +747,8 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
                                     val readSize = recorder.read(buffer, 0, buffer.size)
                                     if (readSize > 0) {
                                         for (i in 0 until readSize step 2) {
-                                            val s = ((buffer[i+1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
+                                            val s =
+                                                ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
                                             audioData.add(s / 32768.0f)
                                         }
                                     }
@@ -685,10 +762,12 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
                                 }
 
                                 val ortEnvironment = OrtEnvironment.getEnvironment()
-                                val embBytes = context.assets.open("model/speech-embedding.onnx").readBytes()
+                                val embBytes =
+                                    context.assets.open("model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx").readBytes()
                                 val embSession = ortEnvironment.createSession(embBytes)
 
-                                val queryFrames = extractEmbeddingFrames(embSession, ortEnvironment, audioData)
+                                val queryFrames =
+                                    extractEmbeddingFrames(embSession, ortEnvironment, audioData)
                                 embSession.close()
 
                                 val refFrames = VoiceLockState.referenceFrames!!
@@ -700,9 +779,13 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
                                     verifyState = "Idle"
                                     verifyText = "Hoàn tất xác thực!"
                                     matchResult = if (isMatch) {
-                                        "✅ XÁC THỰC THÀNH CÔNG!\nKhoảng cách DTW: %.4f (Khớp giọng)".format(dtwDistance)
+                                        "✅ XÁC THỰC THÀNH CÔNG!\nKhoảng cách DTW: %.4f (Khớp giọng)".format(
+                                            dtwDistance
+                                        )
                                     } else {
-                                        "❌ XÁC THỰC THẤT BẠI!\nKhoảng cách DTW: %.4f (Không khớp)".format(dtwDistance)
+                                        "❌ XÁC THỰC THẤT BẠI!\nKhoảng cách DTW: %.4f (Không khớp)".format(
+                                            dtwDistance
+                                        )
                                     }
                                 }
                             }
@@ -729,7 +812,9 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
 
         OutlinedButton(
             onClick = { onDismiss() },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
         ) {
             Text("Back")
         }
@@ -743,7 +828,8 @@ fun cosineDistance(bVar: FloatArray, bVar2: FloatArray): Float {
     var f12 = 0.0f
     var norm1 = 0.0f
     var norm2 = 0.0f
-    for (i12 in 0 until 96) {
+    val len = minOf(bVar.size, bVar2.size)
+    for (i12 in 0 until len) {
         f12 += bVar[i12] * bVar2[i12]
         norm1 += bVar[i12] * bVar[i12]
         norm2 += bVar2[i12] * bVar2[i12]
@@ -784,91 +870,189 @@ fun computeDTWDistance(queryFrames: List<FloatArray>, refFrames: List<FloatArray
     return dtw[n][m] / (n + m)
 }
 
-suspend fun recognizeSpeech(context: Context): String = suspendCancellableCoroutine { continuation ->
-    Handler(context.mainLooper).post {
-        try {
-            val speechRecognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-                SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            } else {
-                SpeechRecognizer.createSpeechRecognizer(context)
-            }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "vi-VN")
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            }
-
-            speechRecognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(error: Int) {
-                    speechRecognizer.destroy()
-                    if (continuation.isActive) {
-                        continuation.resume("Lỗi nhận diện (code: $error)")
+suspend fun recognizeSpeech(context: Context): String =
+    suspendCancellableCoroutine { continuation ->
+        val mainHandler = Handler(context.mainLooper)
+        mainHandler.post {
+            try {
+                Log.d("SpeechRecognizerDebug", "Creating SpeechRecognizer...")
+                val speechRecognizer =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(
+                            context
+                        )
+                    ) {
+                        Log.d("SpeechRecognizerDebug", "Using on-device SpeechRecognizer")
+                        SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                    } else {
+                        Log.d("SpeechRecognizerDebug", "Using standard SpeechRecognizer")
+                        SpeechRecognizer.createSpeechRecognizer(context)
                     }
-                }
-                override fun onResults(results: Bundle?) {
-                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    speechRecognizer.destroy()
-                    if (continuation.isActive) {
-                        if (!matches.isNullOrEmpty()) {
-                            continuation.resume(matches[0])
-                        } else {
-                            continuation.resume("Không nhận diện được từ")
+
+                var isFinished = false
+
+                // Thiết lập timeout tối đa 5 giây cho SpeechRecognizer
+                val timeoutRunnable = Runnable {
+                    if (!isFinished) {
+                        isFinished = true
+                        Log.w("SpeechRecognizerDebug", "Timeout triggered (5s reached)! Cancelling SpeechRecognizer...")
+                        try {
+                            speechRecognizer.cancel()
+                        } catch (e: Exception) {
+                            Log.e("SpeechRecognizerDebug", "Error cancelling on timeout", e)
+                        }
+                        speechRecognizer.destroy()
+                        if (continuation.isActive) {
+                            continuation.resume("Hết thời gian (Quá 5 giây không có kết quả)")
                         }
                     }
                 }
-                override fun onPartialResults(partialResults: Bundle?) {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+                mainHandler.postDelayed(timeoutRunnable, 10000L)
 
-            speechRecognizer.startListening(intent)
-        } catch (e: Exception) {
-            if (continuation.isActive) {
-                continuation.resume("Lỗi SpeechRecognizer: ${e.localizedMessage}")
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    // 1. EXTRA_LANGUAGE_MODEL: Mô hình nhận diện tự do (free_form)
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                    )
+                    // 2. EXTRA_LANGUAGE: Ngôn ngữ chính nhận diện
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+                    // 3. EXTRA_LANGUAGE_PREFERENCE: Ngôn ngữ ưu tiên
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
+                    // 4. EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE: Chỉ định trả về theo ngôn ngữ ưu tiên
+                    putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
+                    // 5. EXTRA_MAX_RESULTS: Giới hạn số kết quả trả về tối đa
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                }
+
+                speechRecognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        Log.d("SpeechRecognizerDebug", "onReadyForSpeech: Sẵn sàng nhận giọng nói")
+                    }
+                    override fun onBeginningOfSpeech() {
+                        Log.d("SpeechRecognizerDebug", "onBeginningOfSpeech: Người dùng đã bắt đầu nói")
+                    }
+                    override fun onRmsChanged(rmsdB: Float) {
+                        // Log.v("SpeechRecognizerDebug", "onRmsChanged: rmsdB = $rmsdB")
+                    }
+                    override fun onBufferReceived(buffer: ByteArray?) {
+                        Log.d("SpeechRecognizerDebug", "onBufferReceived: Nhận audio buffer")
+                    }
+                    override fun onEndOfSpeech() {
+                        Log.d("SpeechRecognizerDebug", "onEndOfSpeech: Người dùng đã dừng nói")
+                    }
+                    override fun onError(error: Int) {
+                        if (!isFinished) {
+                            isFinished = true
+                            mainHandler.removeCallbacks(timeoutRunnable)
+                            speechRecognizer.destroy()
+                            val errorMsg = when (error) {
+                                SpeechRecognizer.ERROR_NETWORK -> "Lỗi mạng (Network error)"
+                                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Timeout mạng"
+                                SpeechRecognizer.ERROR_AUDIO -> "Lỗi audio (Audio recording error)"
+                                SpeechRecognizer.ERROR_SERVER -> "Lỗi server"
+                                SpeechRecognizer.ERROR_CLIENT -> "Lỗi client"
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Hết thời gian (Không phát hiện giọng nói)"
+                                SpeechRecognizer.ERROR_NO_MATCH -> "Không nhận diện được từ (No match)"
+                                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer đang bận"
+                                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Không đủ quyền"
+                                else -> "Lỗi nhận diện không xác định"
+                            }
+                            Log.e("SpeechRecognizerDebug", "onError: code = $error -> $errorMsg")
+                            if (continuation.isActive) {
+                                continuation.resume("$errorMsg (code: $error)")
+                            }
+                        }
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        if (!isFinished) {
+                            isFinished = true
+                            mainHandler.removeCallbacks(timeoutRunnable)
+                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            Log.d("SpeechRecognizerDebug", "onResults: matches = $matches")
+                            speechRecognizer.destroy()
+                            if (continuation.isActive) {
+                                if (!matches.isNullOrEmpty()) {
+                                    continuation.resume(matches[0])
+                                } else {
+                                    continuation.resume("Không nhận diện được từ")
+                                }
+                            }
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        Log.d("SpeechRecognizerDebug", "onPartialResults: $partial")
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {
+                        Log.d("SpeechRecognizerDebug", "onEvent: eventType = $eventType")
+                    }
+                })
+
+                Log.d("SpeechRecognizerDebug", "Calling startListening...")
+                speechRecognizer.startListening(intent)
+            } catch (e: Exception) {
+                Log.e("SpeechRecognizerDebug", "Exception in recognizeSpeech", e)
+                if (continuation.isActive) {
+                    continuation.resume("Lỗi SpeechRecognizer: ${e.localizedMessage}")
+                }
             }
         }
     }
-}
 
 // Hàm kiểm tra xem đoạn ghi âm có chứa tiếng nói con người (Human Speech) hay không bằng model Silero VAD (ONNX).
 // Model nhận vào các đoạn audio nhỏ (chunks 512 mẫu), tần số mẫu (sr = 16000Hz), và state để trả về xác suất (probability) có tiếng nói.
 fun checkSpeechWithSileroVAD(
     vadSession: OrtSession,
     env: OrtEnvironment,
-    audioFloatList: List<Float>,
-    chunkSize: Int = 512
+    audioFloatList: List<Float>
 ): Boolean {
-    Log.d("SileroVAD", "Starting VAD check: audioFloatList size = ${audioFloatList.size}, chunkSize = $chunkSize")
-    if (audioFloatList.size < chunkSize) {
-        Log.d("SileroVAD", "Audio size ${audioFloatList.size} is less than chunkSize $chunkSize -> returning false")
-        return false
-    }
-    val paddedList = audioFloatList.toMutableList()
-    while (paddedList.size % chunkSize != 0) {
-        paddedList.add(0.0f)
-    }
+    if (audioFloatList.size < 512) return false
 
-    // Tạo tensor chứa thông tin tần số mẫu 16kHz truyền vào model VAD
-    val srTensor = OnnxTensor.createTensor(env, longArrayOf(16000))
+    // 1. Khởi tạo srTensor với shape [1]
+    val srBuffer = LongBuffer.wrap(longArrayOf(16000L))
+    val srTensor = OnnxTensor.createTensor(env, srBuffer, longArrayOf(1))
+
+    // 2. Khởi tạo state ẩn (2 x 1 x 128) toàn số 0
+    val stateArray = Array(2) { Array(1) { FloatArray(128) } }
+
+    // 3. Khởi tạo buffer lưu 64 mẫu lịch sử
+    val historyBuffer = FloatArray(64)
+
+    val chunkSize = 512
+    val totalChunks = audioFloatList.size / chunkSize
     var speechChunkCount = 0
-    val totalChunks = paddedList.size / chunkSize
-    Log.d("SileroVAD", "Total chunks to process: $totalChunks (padded size: ${paddedList.size})")
 
-    // Chia audio thành các chunk 512 mẫu để chạy model ONNX lần lượt theo thời gian
     for (i in 0 until totalChunks) {
-        val chunk = FloatArray(chunkSize)
+        val chunk512 = FloatArray(chunkSize)
         for (j in 0 until chunkSize) {
-            chunk[j] = paddedList[i * chunkSize + j]
+            chunk512[j] = audioFloatList[i * chunkSize + j]
         }
-        val inputTensor = OnnxTensor.createTensor(env, arrayOf(chunk))
-        // Trạng thái ẩn (state) của mạng RNN trong mô hình Silero VAD (kích thước 2 x 1 x 128)
-        val stateArray = Array(2) { Array(1) { FloatArray(128) } }
-        val stateTensor = OnnxTensor.createTensor(env, stateArray)
+
+        // Tạo mảng 576 mẫu: 64 mẫu cũ + 512 mẫu mới
+        val input576 = FloatArray(576)
+        System.arraycopy(historyBuffer, 0, input576, 0, 64)
+        System.arraycopy(chunk512, 0, input576, 64, 512)
+
+        // Lưu 64 mẫu cuối của chunk này cho lần lặp sau
+        System.arraycopy(chunk512, 512 - 64, historyBuffer, 0, 64)
+
+        // Tạo input tensor shape [1, 576]
+        val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(input576), longArrayOf(1, 576))
+
+        // Chuẩn bị state tensor (2 x 1 x 128)
+        val flatStateInput = FloatArray(256)
+        var sIdx = 0
+        for (d0 in 0 until 2) {
+            for (d1 in 0 until 1) {
+                for (d2 in 0 until 128) {
+                    flatStateInput[sIdx++] = stateArray[d0][d1][d2]
+                }
+            }
+        }
+        val stateTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(flatStateInput), longArrayOf(2, 1, 128))
 
         val inputs = mapOf(
             "input" to inputTensor,
@@ -877,27 +1061,36 @@ fun checkSpeechWithSileroVAD(
         )
 
         try {
-            // Chạy model ONNX Runtime (vận hành suy luận AI)
             val results = vadSession.run(inputs)
             val outputTensor = results[0] as OnnxTensor
-            val outputArray = outputTensor.floatBuffer.let { buffer ->
-                val arr = FloatArray(buffer.remaining())
-                buffer.get(arr)
-                arr
+            val prob = outputTensor.floatBuffer.get(0)
+
+            // Cập nhật stateN trả về từ mô hình
+            val outStateTensor = results[1] as OnnxTensor
+            val outStateBuffer = outStateTensor.floatBuffer
+            val flatState = FloatArray(256)
+            if (outStateBuffer.remaining() >= 256) {
+                outStateBuffer.get(flatState)
+                var idx = 0
+                for (d0 in 0 until 2) {
+                    for (d1 in 0 until 1) {
+                        for (d2 in 0 until 128) {
+                            stateArray[d0][d1][d2] = flatState[idx++]
+                        }
+                    }
+                }
             }
-            // Lấy xác suất có tiếng nói (probability) từ output của model
-            val prob = if (outputArray.isNotEmpty()) outputArray[0] else -1f
-            // Nếu xác suất > 0.3 thì tính là có tiếng nói trong chunk này
-            if (prob > 0.3f) {
+
+            if (prob > 0.5f) {
+                Log.d("SileroVAD", "chunk $i, prob= $prob")
                 speechChunkCount++
-                Log.d("SileroVAD", "Chunk $i/$totalChunks: SPEECH detected (prob = $prob)")
-            } else {
-                // Use Log.v or Log.d if you want to see non-speech chunks. Let's use Log.d or verbose.
-                // Log.d("SileroVAD", "Chunk $i/$totalChunks: NO speech (prob = $prob)")
+            }
+            else {
+                Log.d("SileroVAD", "chunk $i, prob =$prob")
             }
             results.close()
-        } catch (ex: Exception) {
-            Log.e("SileroVAD", "Error running VAD chunk $i", ex)
+        } catch (e: Exception) {
+            Log.e("SileroVAD", "Error at chunk $i", e)
         } finally {
             inputTensor.close()
             stateTensor.close()
@@ -906,44 +1099,39 @@ fun checkSpeechWithSileroVAD(
 
     srTensor.close()
 
-    // Ngưỡng quyết định: nếu số lượng chunk chứa tiếng nói đạt ngưỡng yêu cầu thì coi là có giọng nói hợp lệ
+    // Ngưỡng quyết định có giọng nói
     val threshold = maxOf(2, totalChunks / 20)
-    val hasSpeech = speechChunkCount >= threshold
-    Log.d("SileroVAD", "VAD finished: speechChunkCount = $speechChunkCount, threshold = $threshold, hasSpeech = $hasSpeech")
-    return hasSpeech
+    return speechChunkCount >= threshold
 }
 
 // Hàm trích xuất đặc trưng giọng nói (Speech Embedding) sử dụng model ONNX (`speech-embedding.onnx`).
-// Model nhận toàn bộ mảng audio PCM và trả về chuỗi các frame đặc trưng (mỗi frame gồm 96 chiều).
+// Model nhận trực tiếp mảng audio PCM và trả về chuỗi các frame đặc trưng (mỗi frame gồm 96 chiều).
 fun extractEmbeddingFrames(
     embSession: OrtSession,
     env: OrtEnvironment,
     audioFloatList: List<Float>
 ): List<FloatArray> {
-    // Đưa danh sách audio float thành mảng 2 chiều để làm input tensor cho model ONNX
     val inputArray = arrayOf(audioFloatList.toFloatArray())
     val inputTensor = OnnxTensor.createTensor(env, inputArray)
-    
+
     val inputName = embSession.inputNames.iterator().next()
     val inputs = mapOf(inputName to inputTensor)
 
     try {
-        // Thực thi suy luận (inference) với ONNX Runtime Session
         val results = embSession.run(inputs)
         val outputTensor = results[0] as OnnxTensor
         val outputBuffer = outputTensor.floatBuffer
         val totalElements = outputBuffer.remaining()
         val data = FloatArray(totalElements)
         outputBuffer.get(data)
-        
+
         results.close()
         inputTensor.close()
 
         val frames = mutableListOf<FloatArray>()
-        val dim = 96 // Số chiều (dimension) đặc trưng của mỗi frame
-        val numFrames = totalElements / dim // Tổng số frame trích xuất được theo thời gian
+        val dim = 96 // Số chiều (dimension) đặc trưng của speech-embedding.onnx là 96
+        val numFrames = totalElements / dim
 
-        // Cắt mảng kết quả 1 chiều thành danh sách các FloatArray 96 chiều (các vector đặc trưng từng khung thời gian)
         for (f in 0 until maxOf(1, numFrames)) {
             val frame = FloatArray(dim)
             val start = f * dim
