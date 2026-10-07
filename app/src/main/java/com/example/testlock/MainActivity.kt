@@ -1,8 +1,5 @@
 package com.example.testlock
 
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -54,38 +51,56 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.testlock.service.LockScreenService
 import com.example.testlock.ui.theme.TestlockTheme
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import java.nio.FloatBuffer
-import java.nio.LongBuffer
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
 
 object VoiceLockState {
-    var referenceFrames: List<FloatArray>? = null
+    var referenceEmbedding: FloatArray? = null
     var targetKeyword: String? = null
 }
 
 class MainActivity : ComponentActivity() {
 
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
+        ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // Handle audio permission result
+        // Handle permissions result
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        val permissionsToRequest = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.RECORD_AUDIO
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_PHONE_STATE
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(Manifest.permission.READ_PHONE_STATE)
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         }
 
         setContent {
@@ -539,7 +554,10 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                     maxOf(minBufferSize, 3200)
                                 )
 
-                                Log.d("AudioRecordDebug", "Requested sampleRate: $sampleRate, Actual sampleRate: ${recorder.sampleRate}, state: ${recorder.state}, minBufferSize: $minBufferSize")
+                                Log.d(
+                                    "AudioRecordDebug",
+                                    "Requested sampleRate: $sampleRate, Actual sampleRate: ${recorder.sampleRate}, state: ${recorder.state}, minBufferSize: $minBufferSize"
+                                )
 
                                 val audioData = mutableListOf<Float>()
                                 val buffer = ByteArray(512 * 2)
@@ -559,26 +577,39 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                 recorder.stop()
                                 recorder.release()
 
-                                Log.d("SileroVADSetup", "AudioRecord finished: total samples = ${audioData.size}, duration = ${audioData.size * 1000L / 16000} ms")
+                                Log.d(
+                                    "SileroVADSetup",
+                                    "AudioRecord finished: total samples = ${audioData.size}, duration = ${audioData.size * 1000L / 16000} ms"
+                                )
                                 if (audioData.isNotEmpty()) {
                                     val overallRms = sqrt(audioData.map { it * it }.average())
-                                    Log.d("SileroVADSetup", "Overall audio RMS = $overallRms, min = ${audioData.minOrNull()}, max = ${audioData.maxOrNull()}")
+                                    Log.d(
+                                        "SileroVADSetup",
+                                        "Overall audio RMS = $overallRms, min = ${audioData.minOrNull()}, max = ${audioData.maxOrNull()}"
+                                    )
                                 }
 
                                 withContext(Dispatchers.Main) {
                                     recordingState = "Processing"
                                     progressText = "Đang chạy Silero VAD kiểm tra tiếng người..."
                                 }
-//OrtEnvironment là môi trường/runtime context của ONNX Runtime. -> tạo môi trường + tạo session để chạy model, có thể ví OrtEnvironment là context trong Android
-                                val ortEnvironment = OrtEnvironment.getEnvironment()
-                                //đọc toàn bộ binary file vào RAM.
-                                val vadBytes = context.assets.open("model/silero_vad_16k_op15.onnx")
-                                    .readBytes()
-                                //OrtSession là một phiên làm việc để chạy model Silero VAD cụ thể.
-                                val vadSession = ortEnvironment.createSession(vadBytes)
-                                val hasHumanSpeech =
-                                    checkSpeechWithSileroVAD(vadSession, ortEnvironment, audioData)
-                                vadSession.close()
+                                val vadConfig = VadModelConfig(
+                                    sileroVadModelConfig = SileroVadModelConfig(
+                                        model = "model/silero_vad_16k_op15.onnx",
+                                        threshold = 0.5F,
+                                        minSilenceDuration = 0.25F,
+                                        minSpeechDuration = 0.25F,
+                                        windowSize = 512,
+                                    ),
+                                    sampleRate = 16000,
+                                    numThreads = 1,
+                                    provider = "cpu",
+                                )
+                                val vad = Vad(context.assets, vadConfig)
+                                vad.acceptWaveform(audioData.toFloatArray())
+                                vad.flush()
+                                val hasHumanSpeech = vad.isSpeechDetected() || !vad.empty()
+                                vad.release()
 
                                 if (!hasHumanSpeech) {
                                     withContext(Dispatchers.Main) {
@@ -590,18 +621,95 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                 }
 
                                 withContext(Dispatchers.Main) {
-                                    progressText = "Phát hiện giọng nói! Đang nhận diện từ..."
+                                    progressText = "Phát hiện giọng nói! Đang chạy Zipformer ASR..."
                                 }
 
-                                val embBytes =
-                                    context.assets.open("model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx").readBytes()
-                                val embSession = ortEnvironment.createSession(embBytes)
-                                val embeddingFrames =
-                                    extractEmbeddingFrames(embSession, ortEnvironment, audioData)
-                                embSession.close()
+                                var zipformerText = ""
+                                try {
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "Initializing OfflineModelConfig and OfflineRecognizerConfig..."
+                                    )
+                                    val modelConfig = OfflineModelConfig(
+                                        transducer = OfflineTransducerModelConfig(
+                                            encoder = "model/zipformer/encoder.int8.onnx",
+                                            decoder = "model/zipformer/decoder.onnx",
+                                            joiner = "model/zipformer/joiner.int8.onnx"
+                                        ),
+                                        tokens = "model/zipformer/tokens.txt",
+                                        numThreads = 1,
+                                        provider = "cpu"
+                                    )
+                                    val recognizerConfig = OfflineRecognizerConfig(
+                                        modelConfig = modelConfig,
+                                        decodingMethod = "greedy_search"
+                                    )
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "Creating OfflineRecognizer from assets..."
+                                    )
+                                    val recognizer =
+                                        OfflineRecognizer(context.assets, recognizerConfig)
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "OfflineRecognizer created successfully. Creating stream..."
+                                    )
+                                    val offlineStream = recognizer.createStream()
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "Stream created. Accepting waveform (${audioData.size} samples)..."
+                                    )
+                                    offlineStream.acceptWaveform(audioData.toFloatArray(), 16000)
 
-                                VoiceLockState.referenceFrames = embeddingFrames
-                                Log.d("faewfawe", "${VoiceLockState.referenceFrames}")
+                                    Log.d("ZipformerASR", "Decoding waveform...")
+                                    recognizer.decode(offlineStream)
+
+                                    Log.d("ZipformerASR", "Decoding finished. Getting result...")
+                                    val result = recognizer.getResult(offlineStream)
+                                    zipformerText = result.text
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "Zipformer result text: '$zipformerText', tokens count: ${result.tokens.size}"
+                                    )
+
+                                    offlineStream.release()
+                                    recognizer.release()
+                                    Log.d(
+                                        "ZipformerASR",
+                                        "OfflineRecognizer and stream released successfully."
+                                    )
+                                } catch (e: Throwable) {
+                                    Log.e(
+                                        "ZipformerASR",
+                                        "Fatal error during Zipformer ASR execution",
+                                        e
+                                    )
+                                    zipformerText = "Lỗi Zipformer: ${e.localizedMessage}"
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    recognizedText = zipformerText
+                                }
+
+                                val config = SpeakerEmbeddingExtractorConfig(
+                                    "model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+                                    2,
+                                    false,
+                                    "cpu"
+                                )
+                                val extractor = SpeakerEmbeddingExtractor(context.assets, config)
+                                val stream = extractor.createStream()
+                                stream.acceptWaveform(audioData.toFloatArray(), 16000)
+                                stream.inputFinished()
+                                val embedding = extractor.compute(stream)
+                                stream.release()
+                                extractor.release()
+
+                                VoiceLockState.referenceEmbedding = embedding
+                                Log.d(
+                                    "VoiceLockSetup",
+                                    "Extracted reference embedding size: ${embedding.size}"
+                                )
                                 withContext(Dispatchers.Main) {
                                     recordingState = "Success"
                                     isSuccess = true
@@ -707,7 +815,7 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
 
         Button(
             onClick = {
-                if (VoiceLockState.referenceFrames == null) {
+                if (VoiceLockState.referenceEmbedding == null) {
                     verifyText = "Chưa có mẫu giọng nói đăng ký! Hãy chạy bước 4 (Setup) trước."
                     return@Button
                 }
@@ -758,34 +866,178 @@ fun VoiceVerificationScreen(onDismiss: () -> Unit) {
 
                                 withContext(Dispatchers.Main) {
                                     verifyState = "Processing"
-                                    verifyText = "Đang trích xuất đặc trưng & so khớp DTW..."
+                                    verifyText =
+                                        "Đang chạy Zipformer ASR & 3dspeaker Verification..."
                                 }
 
-                                val ortEnvironment = OrtEnvironment.getEnvironment()
-                                val embBytes =
-                                    context.assets.open("model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx").readBytes()
-                                val embSession = ortEnvironment.createSession(embBytes)
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "=== 3DSPEAKER & ZIPFORMER VERIFICATION DEBUG ==="
+                                )
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "Audio sample count: ${audioData.size}, duration: ${audioData.size * 1000L / 16000} ms"
+                                )
+                                if (audioData.isNotEmpty()) {
+                                    val rms = sqrt(audioData.map { it * it }.average())
+                                    Log.d(
+                                        "VoiceVerificationDebug",
+                                        "Audio RMS: $rms, min: ${audioData.minOrNull()}, max: ${audioData.maxOrNull()}"
+                                    )
+                                    if (rms < 0.01) {
+                                        Log.w(
+                                            "VoiceVerificationDebug",
+                                            "⚠️ WARNING: Audio RMS is very low (< 0.01). User might be speaking too softly or mic is too far!"
+                                        )
+                                    }
+                                }
 
-                                val queryFrames =
-                                    extractEmbeddingFrames(embSession, ortEnvironment, audioData)
-                                embSession.close()
+                                // 1. Run Zipformer ASR
+                                var verifyAsrText = ""
+                                try {
+                                    Log.d(
+                                        "VoiceVerificationASR",
+                                        "Initializing Zipformer for verification..."
+                                    )
+                                    val modelConfig = OfflineModelConfig(
+                                        transducer = OfflineTransducerModelConfig(
+                                            encoder = "model/zipformer/encoder.int8.onnx",
+                                            decoder = "model/zipformer/decoder.onnx",
+                                            joiner = "model/zipformer/joiner.int8.onnx"
+                                        ),
+                                        tokens = "model/zipformer/tokens.txt",
+                                        numThreads = 1,
+                                        provider = "cpu"
+                                    )
+                                    val recognizerConfig = OfflineRecognizerConfig(
+                                        modelConfig = modelConfig,
+                                        decodingMethod = "greedy_search"
+                                    )
+                                    val recognizer =
+                                        OfflineRecognizer(context.assets, recognizerConfig)
+                                    val offlineStream = recognizer.createStream()
+                                    offlineStream.acceptWaveform(audioData.toFloatArray(), 16000)
+                                    recognizer.decode(offlineStream)
+                                    val result = recognizer.getResult(offlineStream)
+                                    verifyAsrText = result.text
+                                    Log.d(
+                                        "VoiceVerificationASR",
+                                        "Verification ASR result text: '$verifyAsrText'"
+                                    )
+                                    offlineStream.release()
+                                    recognizer.release()
+                                } catch (e: Throwable) {
+                                    Log.e(
+                                        "VoiceVerificationASR",
+                                        "Error running Zipformer ASR in verification",
+                                        e
+                                    )
+                                    verifyAsrText = "Lỗi ASR: ${e.localizedMessage}"
+                                }
 
-                                val refFrames = VoiceLockState.referenceFrames!!
-                                val dtwDistance = computeDTWDistance(queryFrames, refFrames)
+                                // 2. Run 3dspeaker Embedding Extraction & Verification
+                                val config = SpeakerEmbeddingExtractorConfig(
+                                    "model/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+                                    2,
+                                    false,
+                                    "cpu"
+                                )
+                                val extractor = SpeakerEmbeddingExtractor(context.assets, config)
+                                val stream = extractor.createStream()
+                                stream.acceptWaveform(audioData.toFloatArray(), 16000)
+                                stream.inputFinished()
+                                val queryEmbedding = extractor.compute(stream)
+                                stream.release()
+                                extractor.release()
 
-                                val isMatch = dtwDistance < 0.45f
+                                val refEmbedding = VoiceLockState.referenceEmbedding!!
+
+                                val refNorm =
+                                    sqrt(refEmbedding.map { it * it }.sum().toDouble()).toFloat()
+                                val queryNorm =
+                                    sqrt(queryEmbedding.map { it * it }.sum().toDouble()).toFloat()
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "Reference Embedding: size = ${refEmbedding.size}, norm = $refNorm, min = ${refEmbedding.minOrNull()}, max = ${refEmbedding.maxOrNull()}"
+                                )
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "Query Embedding: size = ${queryEmbedding.size}, norm = $queryNorm, min = ${queryEmbedding.minOrNull()}, max = ${queryEmbedding.maxOrNull()}"
+                                )
+
+                                val distance = cosineDistance(queryEmbedding, refEmbedding)
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "Calculated Cosine Distance: $distance (Threshold: 0.35)"
+                                )
+
+                                if (distance > 0.35f) {
+                                    Log.w(
+                                        "VoiceVerificationDebug",
+                                        "❌ WHY 3DSPEAKER FAILED TO MATCH (DIAGNOSTICS):"
+                                    )
+                                    Log.w(
+                                        "VoiceVerificationDebug",
+                                        "1. Distance ($distance) exceeds threshold 0.35."
+                                    )
+                                    Log.w(
+                                        "VoiceVerificationDebug",
+                                        "2. Acoustic mismatch: Background noise, different room acoustics or microphone gain between setup and verification."
+                                    )
+                                    Log.w(
+                                        "VoiceVerificationDebug",
+                                        "3. Voice variation: Speaking speed, pitch, emotion, or phrasing differed."
+                                    )
+                                    Log.w(
+                                        "VoiceVerificationDebug",
+                                        "4. Audio clipping or low energy (RMS = ${
+                                            if (audioData.isNotEmpty()) sqrt(audioData.map { it * it }
+                                                .average()) else 0.0
+                                        })."
+                                    )
+                                }
+
+                                val targetKeyword = VoiceLockState.targetKeyword ?: ""
+                                val similarity = if (targetKeyword.isNotEmpty()) {
+                                    stringSimilarity(
+                                        verifyAsrText.lowercase().trim(),
+                                        targetKeyword.lowercase().trim()
+                                    )
+                                } else {
+                                    1.0
+                                }
+
+                                val isTextMatch =
+                                    targetKeyword.isEmpty() || similarity >= 0.65 // 65% fuzzy tolerance for homophones
+                                val isSpeakerMatch = distance < 0.4f
+                                val isMatch = isSpeakerMatch && isTextMatch
+
+                                Log.d(
+                                    "VoiceVerificationDebug",
+                                    "❌ XÁC THỰC THẤT BẠI - Target keyword: '$targetKeyword', Zipformer Result: '$verifyAsrText', Similarity: $similarity, TextMatch: $isTextMatch, SpeakerMatch: $isSpeakerMatch, FinalMatch: $isMatch"
+                                )
 
                                 withContext(Dispatchers.Main) {
                                     verifyState = "Idle"
                                     verifyText = "Hoàn tất xác thực!"
                                     matchResult = if (isMatch) {
-                                        "✅ XÁC THỰC THÀNH CÔNG!\nKhoảng cách DTW: %.4f (Khớp giọng)".format(
-                                            dtwDistance
+                                        "✅ XÁC THỰC THÀNH CÔNG!\nKhoảng cách Cosine: %.4f\nASR Text: '$verifyAsrText'\nĐộ tương đồng từ khóa: %.1f%%".format(
+                                            distance, similarity * 100
                                         )
                                     } else {
-                                        "❌ XÁC THỰC THẤT BẠI!\nKhoảng cách DTW: %.4f (Không khớp)".format(
-                                            dtwDistance
-                                        )
+                                        val reason = buildString {
+                                            if (!isSpeakerMatch) append(
+                                                "\n- Giọng nói không khớp (Cosine Distance: %.4f >= 0.35)".format(
+                                                    distance
+                                                )
+                                            )
+                                            if (!isTextMatch) append(
+                                                "\n- Từ khóa không khớp (ASR: '$verifyAsrText' vs Target: '$targetKeyword', Tương đồng: %.1f%%)".format(
+                                                    similarity * 100
+                                                )
+                                            )
+                                        }
+                                        "❌ XÁC THỰC THẤT BẠI!$reason\n- Từ khóa yêu cầu: '$targetKeyword'\n- Kết quả Zipformer: '$verifyAsrText'"
                                     }
                                 }
                             }
@@ -841,34 +1093,6 @@ fun cosineDistance(bVar: FloatArray, bVar2: FloatArray): Float {
     return 1.0f - cosineSimilarity
 }
 
-// Thuật toán Dynamic Time Warping (DTW) dùng để so khớp 2 chuỗi frame đặc trưng giọng nói (query và reference)
-// có độ dài thời gian (số lượng frame) khác nhau nhưng phát âm cùng một nội dung.
-// DTW tìm ra đường đi tối ưu (độ lệch ít nhất) giữa 2 chuỗi và trả về khoảng cách tổng thể (distance).
-fun computeDTWDistance(queryFrames: List<FloatArray>, refFrames: List<FloatArray>): Float {
-    val n = queryFrames.size
-    val m = refFrames.size
-    if (n == 0 || m == 0) return Float.MAX_VALUE
-
-    // Khởi tạo ma trận chi phí DTW kích thước (n+1) x (m+1), ban đầu gán giá trị vô cực (Float.MAX_VALUE)
-    val dtw = Array(n + 1) { FloatArray(m + 1) { Float.MAX_VALUE } }
-    dtw[0][0] = 0.0f
-
-    // Tính toán chi phí tích lũy qua từng bước thời gian (i, j)
-    for (i in 1..n) {
-        for (j in 1..m) {
-            // Chi phí tại bước (i, j) là khoảng cách cô-sin giữa frame thứ i của query và frame thứ j của ref
-            val cost = cosineDistance(queryFrames[i - 1], refFrames[j - 1])
-            // Cộng thêm chi phí tối thiểu từ 3 hướng trước đó (đường chéo, hàng trên, cột trái)
-            dtw[i][j] = cost + minOf(
-                dtw[i - 1][j],
-                dtw[i][j - 1],
-                dtw[i - 1][j - 1]
-            )
-        }
-    }
-    // Chuẩn hóa tổng khoảng cách DTW bằng tổng số lượng frame (n + m) để ra điểm trung bình
-    return dtw[n][m] / (n + m)
-}
 
 suspend fun recognizeSpeech(context: Context): String =
     suspendCancellableCoroutine { continuation ->
@@ -894,7 +1118,10 @@ suspend fun recognizeSpeech(context: Context): String =
                 val timeoutRunnable = Runnable {
                     if (!isFinished) {
                         isFinished = true
-                        Log.w("SpeechRecognizerDebug", "Timeout triggered (5s reached)! Cancelling SpeechRecognizer...")
+                        Log.w(
+                            "SpeechRecognizerDebug",
+                            "Timeout triggered (5s reached)! Cancelling SpeechRecognizer..."
+                        )
                         try {
                             speechRecognizer.cancel()
                         } catch (e: Exception) {
@@ -928,18 +1155,26 @@ suspend fun recognizeSpeech(context: Context): String =
                     override fun onReadyForSpeech(params: Bundle?) {
                         Log.d("SpeechRecognizerDebug", "onReadyForSpeech: Sẵn sàng nhận giọng nói")
                     }
+
                     override fun onBeginningOfSpeech() {
-                        Log.d("SpeechRecognizerDebug", "onBeginningOfSpeech: Người dùng đã bắt đầu nói")
+                        Log.d(
+                            "SpeechRecognizerDebug",
+                            "onBeginningOfSpeech: Người dùng đã bắt đầu nói"
+                        )
                     }
+
                     override fun onRmsChanged(rmsdB: Float) {
                         // Log.v("SpeechRecognizerDebug", "onRmsChanged: rmsdB = $rmsdB")
                     }
+
                     override fun onBufferReceived(buffer: ByteArray?) {
                         Log.d("SpeechRecognizerDebug", "onBufferReceived: Nhận audio buffer")
                     }
+
                     override fun onEndOfSpeech() {
                         Log.d("SpeechRecognizerDebug", "onEndOfSpeech: Người dùng đã dừng nói")
                     }
+
                     override fun onError(error: Int) {
                         if (!isFinished) {
                             isFinished = true
@@ -968,7 +1203,8 @@ suspend fun recognizeSpeech(context: Context): String =
                         if (!isFinished) {
                             isFinished = true
                             mainHandler.removeCallbacks(timeoutRunnable)
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            val matches =
+                                results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             Log.d("SpeechRecognizerDebug", "onResults: matches = $matches")
                             speechRecognizer.destroy()
                             if (continuation.isActive) {
@@ -982,7 +1218,8 @@ suspend fun recognizeSpeech(context: Context): String =
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
-                        val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val partial =
+                            partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         Log.d("SpeechRecognizerDebug", "onPartialResults: $partial")
                     }
 
@@ -1002,148 +1239,27 @@ suspend fun recognizeSpeech(context: Context): String =
         }
     }
 
-// Hàm kiểm tra xem đoạn ghi âm có chứa tiếng nói con người (Human Speech) hay không bằng model Silero VAD (ONNX).
-// Model nhận vào các đoạn audio nhỏ (chunks 512 mẫu), tần số mẫu (sr = 16000Hz), và state để trả về xác suất (probability) có tiếng nói.
-fun checkSpeechWithSileroVAD(
-    vadSession: OrtSession,
-    env: OrtEnvironment,
-    audioFloatList: List<Float>
-): Boolean {
-    if (audioFloatList.size < 512) return false
 
-    // 1. Khởi tạo srTensor với shape [1]
-    val srBuffer = LongBuffer.wrap(longArrayOf(16000L))
-    val srTensor = OnnxTensor.createTensor(env, srBuffer, longArrayOf(1))
 
-    // 2. Khởi tạo state ẩn (2 x 1 x 128) toàn số 0
-    val stateArray = Array(2) { Array(1) { FloatArray(128) } }
+fun stringSimilarity(s1: String, s2: String): Double {
+    val len1 = s1.length
+    val len2 = s2.length
+    val dp = Array(len1 + 1) { IntArray(len2 + 1) }
 
-    // 3. Khởi tạo buffer lưu 64 mẫu lịch sử
-    val historyBuffer = FloatArray(64)
+    for (i in 0..len1) dp[i][0] = i
+    for (j in 0..len2) dp[0][j] = j
 
-    val chunkSize = 512
-    val totalChunks = audioFloatList.size / chunkSize
-    var speechChunkCount = 0
-
-    for (i in 0 until totalChunks) {
-        val chunk512 = FloatArray(chunkSize)
-        for (j in 0 until chunkSize) {
-            chunk512[j] = audioFloatList[i * chunkSize + j]
-        }
-
-        // Tạo mảng 576 mẫu: 64 mẫu cũ + 512 mẫu mới
-        val input576 = FloatArray(576)
-        System.arraycopy(historyBuffer, 0, input576, 0, 64)
-        System.arraycopy(chunk512, 0, input576, 64, 512)
-
-        // Lưu 64 mẫu cuối của chunk này cho lần lặp sau
-        System.arraycopy(chunk512, 512 - 64, historyBuffer, 0, 64)
-
-        // Tạo input tensor shape [1, 576]
-        val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(input576), longArrayOf(1, 576))
-
-        // Chuẩn bị state tensor (2 x 1 x 128)
-        val flatStateInput = FloatArray(256)
-        var sIdx = 0
-        for (d0 in 0 until 2) {
-            for (d1 in 0 until 1) {
-                for (d2 in 0 until 128) {
-                    flatStateInput[sIdx++] = stateArray[d0][d1][d2]
-                }
-            }
-        }
-        val stateTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(flatStateInput), longArrayOf(2, 1, 128))
-
-        val inputs = mapOf(
-            "input" to inputTensor,
-            "sr" to srTensor,
-            "state" to stateTensor
-        )
-
-        try {
-            val results = vadSession.run(inputs)
-            val outputTensor = results[0] as OnnxTensor
-            val prob = outputTensor.floatBuffer.get(0)
-
-            // Cập nhật stateN trả về từ mô hình
-            val outStateTensor = results[1] as OnnxTensor
-            val outStateBuffer = outStateTensor.floatBuffer
-            val flatState = FloatArray(256)
-            if (outStateBuffer.remaining() >= 256) {
-                outStateBuffer.get(flatState)
-                var idx = 0
-                for (d0 in 0 until 2) {
-                    for (d1 in 0 until 1) {
-                        for (d2 in 0 until 128) {
-                            stateArray[d0][d1][d2] = flatState[idx++]
-                        }
-                    }
-                }
-            }
-
-            if (prob > 0.5f) {
-                Log.d("SileroVAD", "chunk $i, prob= $prob")
-                speechChunkCount++
-            }
-            else {
-                Log.d("SileroVAD", "chunk $i, prob =$prob")
-            }
-            results.close()
-        } catch (e: Exception) {
-            Log.e("SileroVAD", "Error at chunk $i", e)
-        } finally {
-            inputTensor.close()
-            stateTensor.close()
+    for (i in 1..len1) {
+        for (j in 1..len2) {
+            val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
+            dp[i][j] = minOf(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost
+            )
         }
     }
-
-    srTensor.close()
-
-    // Ngưỡng quyết định có giọng nói
-    val threshold = maxOf(2, totalChunks / 20)
-    return speechChunkCount >= threshold
-}
-
-// Hàm trích xuất đặc trưng giọng nói (Speech Embedding) sử dụng model ONNX (`speech-embedding.onnx`).
-// Model nhận trực tiếp mảng audio PCM và trả về chuỗi các frame đặc trưng (mỗi frame gồm 96 chiều).
-fun extractEmbeddingFrames(
-    embSession: OrtSession,
-    env: OrtEnvironment,
-    audioFloatList: List<Float>
-): List<FloatArray> {
-    val inputArray = arrayOf(audioFloatList.toFloatArray())
-    val inputTensor = OnnxTensor.createTensor(env, inputArray)
-
-    val inputName = embSession.inputNames.iterator().next()
-    val inputs = mapOf(inputName to inputTensor)
-
-    try {
-        val results = embSession.run(inputs)
-        val outputTensor = results[0] as OnnxTensor
-        val outputBuffer = outputTensor.floatBuffer
-        val totalElements = outputBuffer.remaining()
-        val data = FloatArray(totalElements)
-        outputBuffer.get(data)
-
-        results.close()
-        inputTensor.close()
-
-        val frames = mutableListOf<FloatArray>()
-        val dim = 96 // Số chiều (dimension) đặc trưng của speech-embedding.onnx là 96
-        val numFrames = totalElements / dim
-
-        for (f in 0 until maxOf(1, numFrames)) {
-            val frame = FloatArray(dim)
-            val start = f * dim
-            val end = minOf(start + dim, totalElements)
-            for (k in 0 until (end - start)) {
-                frame[k] = data[start + k]
-            }
-            frames.add(frame)
-        }
-        return frames
-    } catch (e: Exception) {
-        inputTensor.close()
-        throw e
-    }
+    val maxLen = maxOf(len1, len2)
+    if (maxLen == 0) return 1.0
+    return 1.0 - dp[len1][len2].toDouble() / maxLen
 }
