@@ -26,7 +26,6 @@ class LockScreenViewBinder(
     }
 
     fun show() {
-        Log.d(TAG, "show() called. overlayView = $overlayView")
         if (overlayView != null) return
 
         val params = WindowManager.LayoutParams(
@@ -56,12 +55,10 @@ class LockScreenViewBinder(
 
             val btnUnlock = overlayView?.findViewById<Button>(R.id.btnUnlock)
             btnUnlock?.setOnClickListener {
-                Log.d(TAG, "Unlock button clicked!")
                 onUnlockRequested()
             }
 
             windowManager.addView(overlayView, params)
-            Log.d(TAG, "windowManager.addView successfully called.")
 
             // On Android 11+ (API 30+), apply windowInsetsController AFTER the view is attached to the window
             overlayView?.post {
@@ -69,7 +66,6 @@ class LockScreenViewBinder(
                     overlayView?.windowInsetsController?.let { controller ->
                         controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                         controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                        Log.d(TAG, "WindowInsetsController successfully hid status bars and navigation bars.")
                     }
                 } else {
                     @Suppress("DEPRECATION")
@@ -87,11 +83,9 @@ class LockScreenViewBinder(
     }
 
     fun hide() {
-        Log.d(TAG, "hide() called. overlayView = $overlayView")
         overlayView?.let {
             try {
                 windowManager.removeView(it)
-                Log.d(TAG, "windowManager.removeView successfully called.")
             } catch (e: Exception) {
                 Log.e(TAG, "Error removing overlay view from WindowManager", e)
             }

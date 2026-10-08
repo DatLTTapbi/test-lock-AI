@@ -66,6 +66,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
+import androidx.core.net.toUri
 
 object VoiceLockState {
     var referenceEmbedding: FloatArray? = null
@@ -109,13 +110,13 @@ class MainActivity : ComponentActivity() {
                     LockScreenTestScreen(
                         modifier = Modifier.padding(innerPadding),
                         onCheckPermission = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(
+                            if (!Settings.canDrawOverlays(
                                     this
                                 )
                             ) {
                                 val intent = Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:$packageName")
+                                    "package:$packageName".toUri()
                                 )
                                 startActivity(intent)
                             }
@@ -218,7 +219,7 @@ fun LockScreenTestScreen(
                         .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                 ) {
-                    Text("4. Thiết lập Khóa Giọng Nói (Vector DTW)")
+                    Text("4. Cài đặt AI model")
                 }
 
                 Button(
@@ -228,7 +229,7 @@ fun LockScreenTestScreen(
                         .padding(vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                 ) {
-                    Text("5. Xác thực Giọng Nói (Vector DTW)")
+                    Text("5. Xác thực với AI model")
                 }
 
                 Button(
@@ -547,7 +548,7 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                 ) == PackageManager.PERMISSION_GRANTED
                             ) {
                                 val recorder = AudioRecord(
-                                    MediaRecorder.AudioSource.MIC,
+                                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                                     sampleRate,
                                     channelConfig,
                                     audioFormat,
@@ -576,19 +577,6 @@ fun VoiceLockSetupScreen(onDismiss: () -> Unit) {
                                 }
                                 recorder.stop()
                                 recorder.release()
-
-                                Log.d(
-                                    "SileroVADSetup",
-                                    "AudioRecord finished: total samples = ${audioData.size}, duration = ${audioData.size * 1000L / 16000} ms"
-                                )
-                                if (audioData.isNotEmpty()) {
-                                    val overallRms = sqrt(audioData.map { it * it }.average())
-                                    Log.d(
-                                        "SileroVADSetup",
-                                        "Overall audio RMS = $overallRms, min = ${audioData.minOrNull()}, max = ${audioData.maxOrNull()}"
-                                    )
-                                }
-
                                 withContext(Dispatchers.Main) {
                                     recordingState = "Processing"
                                     progressText = "Đang chạy Silero VAD kiểm tra tiếng người..."
